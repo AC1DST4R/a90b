@@ -1,0 +1,20 @@
+{
+  "packageId": "com.example.a90b",
+  "host": "YOUR-USERNAME.github.io",
+  "name": "A-90B Simulator",
+  "launcherName": "A-90B",
+  "display": "standalone",
+  "orientation": "landscape",
+  "themeColor": "#000000",
+  "navigationColor": "#000000",
+  "backgroundColor": "#000000",
+  "enableNotifications": false,
+  "startUrl": "/a90b/index.html",
+  "iconUrl": "https://YOUR-USERNAME.github.io/a90b/icons/icon-512.png",
+  "maskableIconUrl": "https://YOUR-USERNAME.github.io/a90b/icons/icon-512.png",
+  "webManifestUrl": "https://YOUR-USERNAME.github.io/a90b/manifest.json",
+  "appVersion": "1.0.0",
+  "appVersionCode": 1,
+  "fallbackType": "customtabs",
+  "signingKey": { "path": "./android.keystore", "alias": "a90b" }
+}

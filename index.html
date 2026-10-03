@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#000000">
+<link rel="icon" href="icons/icon-192.png">
+<title>A-90B — Quest 3 Passthrough</title>
+<style>
+html,body{margin:0;height:100%;background:#080808;color:#fff;font-family:Arial,sans-serif;overflow:hidden}
+#ui{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;text-align:center;padding:20px}
+h1{letter-spacing:4px;font-size:40px;margin:0}
+p{max-width:520px;opacity:.7;line-height:1.5;margin:0}
+button{width:300px;padding:16px;border:1px solid #666;border-radius:8px;background:#151515;color:#fff;font-size:18px;cursor:pointer}
+button:hover{background:#262626}
+button:disabled{opacity:.4;cursor:default}
+#msg{color:#f66;font-size:14px;min-height:20px}
+</style>
+</head>
+<body>
+<div id="ui">
+  <h1>A-90B</h1>
+  <p>Mixed reality survival. Obey the sign when it appears: <b>HALT</b> = stay completely still (head and hands). <b>PROCEED</b> = move your head or hands. Survive every round.</p>
+  <button id="enter" disabled>CHECKING XR…</button>
+  <div id="msg"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const RAW = "https://raw.githubusercontent.com/AC1DST4R/90/main/";
+const IMG = {
+  entity: RAW + "images/A-90b.webp",
+  halt: RAW + "images/HALT.webp",
+  proceed: RAW + "images/PROCEED.webp",
+  attack: RAW + "images/ATTACK.webp"
+};
+const mkAudio = f => { const a = new Audio(RAW + "sound/" + f); a.preload = "auto"; a.crossOrigin = "anonymous"; return a; };
+const SND = { warning: mkAudio("warning.mp3"), fail: mkAudio("fail.mp3"), halt: mkAudio("HALT.ogg"), proceed: mkAudio("PROCEED.ogg") };
+function play(a){ try{ a.pause(); a.currentTime = 0; const p = a.play(); if(p) p.catch(()=>{}); }catch(e){} }
+
+// ---------- three.js setup (transparent background = passthrough) ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x000000, 0);
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType("local-floor");
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 50);
+scene.add(camera); // lets head-locked overlays render
+
+const ctrls = [0, 1].map(i => { const c = renderer.xr.getController(i); scene.add(c); return c; });
+ctrls.forEach(c => c.addEventListener("selectstart", onSelect));
+
+// ---------- helpers ----------
+const loader = new THREE.TextureLoader(); loader.setCrossOrigin("anonymous");
+function planeFromImage(url, height, onAspect){
+  const mat = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
+  mesh.scale.set(height, height, 1);
+  loader.load(url, t => {
+    mat.map = t; mat.needsUpdate = true;
+    const asp = t.image.width / t.image.height;
+    mesh.scale.set(height * asp, height, 1);
+    if (onAspect) onAspect(asp);
+  });
+  return mesh;
+}
+function textPanel(w, h){
+  const cv = document.createElement("canvas"); cv.width = 1024; cv.height = Math.round(1024 * h / w);
+  const ctx = cv.getContext("2d"), tex = new THREE.CanvasTexture(cv);
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+  mesh.draw = (lines, opts = {}) => {
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    if (opts.box !== false){
+      ctx.fillStyle = "rgba(0,0,0,.78)"; ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.strokeStyle = opts.color || "#888"; ctx.lineWidth = 6; ctx.strokeRect(8, 8, cv.width - 16, cv.height - 16);
+    }
+    ctx.fillStyle = opts.color || "#fff"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    const n = lines.length, step = cv.height / (n + 1);
+    lines.forEach((l, i) => {
+      ctx.font = `bold ${l.size || 64}px "Courier New", monospace`;
+      ctx.fillText(l.text, cv.width / 2, step * (i + 1));
+    });
+    tex.needsUpdate = true;
+  };
+  return mesh;
+}
+function overlay(mesh){ mesh.renderOrder = 999; mesh.material.depthTest = false; return mesh; }
+
+// ---------- overlays ----------
+// Vignette (head-locked): darkens/reddens the real world as tension rises
+const vc = document.createElement("canvas"); vc.width = vc.height = 512;
+(() => { const x = vc.getContext("2d"), g = x.createRadialGradient(256,256,90,256,256,256);
+  g.addColorStop(0, "rgba(255,255,255,0)"); g.addColorStop(1, "rgba(255,255,255,1)");
+  x.fillStyle = g; x.fillRect(0,0,512,512); })();
+const vigMat = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(vc), color: 0x000000, transparent: true, opacity: 0, depthWrite: false });
+const vignette = overlay(new THREE.Mesh(new THREE.PlaneGeometry(2.4, 2.4), vigMat));
+vignette.position.set(0, 0, -0.5); vignette.renderOrder = 900; camera.add(vignette);
+
+// Instruction card (head-locked)
+const instr = new THREE.Group(); instr.position.set(0, 0.05, -1.3); instr.visible = false; camera.add(instr);
+const instrImg = overlay(planeFromImage(IMG.halt, 0.45)); instrImg.position.y = 0.2; instr.add(instrImg);
+const instrTxt = overlay(textPanel(0.9, 0.28)); instrTxt.position.y = -0.18; instr.add(instrTxt);
+// Round counter (head-locked, low in view)
+const hud = overlay(textPanel(0.5, 0.1)); hud.position.set(0, -0.38, -1.0); hud.visible = false; camera.add(hud);
+// Jumpscare (head-locked)
+const scare = overlay(planeFromImage(IMG.attack, 1.4)); scare.position.set(0, 0, -0.8); scare.visible = false; camera.add(scare);
+
+// Menu / result panel (world-locked)
+const panel = textPanel(1.2, 0.6); panel.visible = false; scene.add(panel);
+
+// A-90B entity (world-locked billboard)
+const entity = planeFromImage(IMG.entity, 1.8); entity.visible = false; scene.add(entity);
+
+// ---------- game state ----------
+let phase = "none", t = 0, round = 0, total = 0, halt = false, movedTime = 0;
+const tmpV = new THREE.Vector3(), tmpQ = new THREE.Quaternion();
+const prev = { head: new THREE.Vector3(), q: new THREE.Quaternion(), c: [new THREE.Vector3(), new THREE.Vector3()], ok: false };
+let headSpeed = 0, headAng = 0, ctrlSpeed = 0;
+
+function placeInFront(obj, dist, dy = 0){
+  camera.getWorldPosition(tmpV);
+  const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.getWorldQuaternion(tmpQ)); dir.y = 0; dir.normalize();
+  obj.position.copy(tmpV).addScaledVector(dir, dist); obj.position.y = tmpV.y + dy;
+  obj.lookAt(tmpV.x, obj.position.y, tmpV.z);
+}
+function showPanel(lines, opts){
+  panel.draw(lines, opts); placeInFront(panel, 1.4, -0.05); panel.visible = true;
+}
+function haptic(strength = 1, ms = 200){
+  const s = renderer.xr.getSession && renderer.xr.getSession(); if(!s) return;
+  for (const src of s.inputSources){
+    const gp = src.gamepad; if(!gp) continue;
+    try{
+      if (gp.hapticActuators && gp.hapticActuators[0]) gp.hapticActuators[0].pulse(strength, ms);
+      else if (gp.vibrationActuator) gp.vibrationActuator.playEffect("dual-rumble", { duration: ms, strongMagnitude: strength, weakMagnitude: strength });
+    }catch(e){}
+  }
+}
+function hideAll(){ instr.visible = hud.visible = entity.visible = scare.visible = panel.visible = false; vigMat.opacity = 0; }
+
+function showMenu(){
+  hideAll(); phase = "menu";
+  showPanel([{ text: "A-90B", size: 110 }, { text: "HALT = freeze   PROCEED = move", size: 42 }, { text: "Pull a trigger to begin", size: 44 }]);
+}
+function startGame(){
+  hideAll(); round = 0; total = 5 + Math.floor(Math.random() * 6);
+  play(SND.warning); nextRound();
+}
+function nextRound(){
+  round++; halt = Math.random() < 0.5;
+  instrImg.material.map = null; instrImg.material.needsUpdate = true;
+  loader.load(halt ? IMG.halt : IMG.proceed, tx => {
+    instrImg.material.map = tx; instrImg.material.needsUpdate = true;
+    instrImg.scale.set(0.45 * tx.image.width / tx.image.height, 0.45, 1);
+  });
+  instrTxt.draw([{ text: halt ? "HALT." : "PROCEED.", size: 120 }], { color: halt ? "#ff5555" : "#66ff88" });
+  instr.visible = true; play(halt ? SND.halt : SND.proceed); haptic(0.4, 120);
+  phase = "instr"; t = 0;
+}
+function spawnEntity(){
+  placeInFront(entity, 2.2, 0); camera.getWorldPosition(tmpV);
+  entity.position.y = Math.max(0.9, tmpV.y - 0.1); entity.lookAt(tmpV.x, entity.position.y, tmpV.z);
+  entity.visible = true;
+  hud.draw([{ text: `ROUND ${round} / ${total}`, size: 56 }]); hud.visible = true;
+}
+function die(){
+  if (phase === "dead") return;
+  phase = "dead"; t = 0;
+  entity.visible = instr.visible = hud.visible = false;
+  scare.visible = true; vigMat.color.set(0x990000); vigMat.opacity = 1;
+  play(SND.fail); haptic(1, 1200);
+}
+function win(){
+  hideAll(); phase = "win";
+  showPanel([{ text: "SURVIVED", size: 100 }, { text: `${total} rounds cleared`, size: 46 }, { text: "Pull a trigger to play again", size: 40 }], { color: "#66ff88" });
+}
+function onSelect(){
+  if (phase === "menu" || phase === "win" || phase === "lost") startGame();
+}
+
+// ---------- per-frame ----------
+const clock = new THREE.Clock();
+function updateMotion(dt){
+  camera.getWorldPosition(tmpV); camera.getWorldQuaternion(tmpQ);
+  const c0 = new THREE.Vector3(), c1 = new THREE.Vector3(); ctrls[0].getWorldPosition(c0); ctrls[1].getWorldPosition(c1);
+  if (prev.ok && dt > 0){
+    const hs = tmpV.distanceTo(prev.head) / dt, ha = THREE.MathUtils.radToDeg(tmpQ.angleTo(prev.q)) / dt;
+    const cs = Math.max(c0.distanceTo(prev.c[0]), c1.distanceTo(prev.c[1])) / dt;
+    headSpeed += (hs - headSpeed) * 0.5; headAng += (ha - headAng) * 0.5; ctrlSpeed += (cs - ctrlSpeed) * 0.5;
+  }
+  prev.head.copy(tmpV); prev.q.copy(tmpQ); prev.c[0].copy(c0); prev.c[1].copy(c1); prev.ok = true;
+}
+const isMoving = () => headSpeed > 0.22 || headAng > 35 || ctrlSpeed > 0.8;
+
+renderer.setAnimationLoop(() => {
+  if (!renderer.xr.isPresenting) { renderer.render(scene, camera); return; }
+  const dt = Math.min(clock.getDelta(), 0.1); t += dt;
+  updateMotion(dt);
+
+  switch (phase){
+    case "instr":
+      instr.children.forEach(c => c.material && (c.material.opacity = Math.random() > 0.2 ? 1 : 0.3));
+      vigMat.color.set(0x000000); vigMat.opacity = Math.min(0.75, 0.15 + round / total * 0.6);
+      if (t >= 1){ instr.visible = false; spawnEntity(); phase = "grace"; t = 0; }
+      break;
+    case "grace":
+      if (t >= 1){ phase = "watch"; t = 0; movedTime = 0; }
+      break;
+    case "watch": {
+      movedTime = isMoving() ? movedTime + dt : Math.max(0, movedTime - dt * 2);
+      entity.position.x += (Math.random() - 0.5) * 0.002;
+      if (halt && movedTime > 0.12) { phase = "lost"; die(); phase = "dead"; break; }
+      if (!halt && movedTime > 0.15) { phase = "gap"; t = 0; entity.visible = false; break; }
+      if (t >= 2){
+        if (halt){ phase = "gap"; t = 0; entity.visible = false; }
+        else die();
+      }
+      break; }
+    case "gap":
+      if (t >= 0.25){ if (round >= total) win(); else nextRound(); }
+      break;
+    case "dead":
+      scare.position.set((Math.random() - 0.5) * 0.06, (Math.random() - 0.5) * 0.06, -0.8 + Math.random() * 0.05);
+      if (t >= (isFinite(SND.fail.duration) && SND.fail.duration > 0 ? SND.fail.duration : 2)){
+        hideAll(); phase = "lost";
+        showPanel([{ text: "YOU DIED", size: 100 }, { text: `Round ${round} / ${total}`, size: 46 }, { text: "Pull a trigger to retry", size: 40 }], { color: "#ff5555" });
+      }
+      break;
+  }
+  renderer.render(scene, camera);
+});
+
+// ---------- entering XR ----------
+const btn = document.getElementById("enter"), msg = document.getElementById("msg");
+let session = null;
+async function enter(){
+  try{
+    session = await navigator.xr.requestSession("immersive-ar", { requiredFeatures: ["local-floor"] });
+    session.addEventListener("end", () => { hideAll(); phase = "none"; document.getElementById("ui").style.display = "flex"; if (renderer.domElement.parentNode) renderer.domElement.remove(); });
+    document.body.appendChild(renderer.domElement);
+    renderer.domElement.style.cssText = "position:fixed;inset:0;width:100%;height:100%";
+    await renderer.xr.setSession(session);
+    document.getElementById("ui").style.display = "none";
+    prev.ok = false; clock.getDelta();
+    Object.values(SND).forEach(a => { try{ a.load(); }catch(e){} });
+    setTimeout(showMenu, 600);
+  }catch(e){ msg.textContent = "Couldn't start passthrough: " + e.message; }
+}
+(async () => {
+  if (!navigator.xr){ btn.textContent = "WEBXR NOT AVAILABLE"; msg.textContent = "Open this page in the Meta Quest Browser over HTTPS."; return; }
+  const ok = await navigator.xr.isSessionSupported("immersive-ar").catch(() => false);
+  if (!ok){ btn.textContent = "AR NOT SUPPORTED"; msg.textContent = "Needs a Quest 3 / 3S with passthrough enabled in the Quest Browser."; return; }
+  btn.disabled = false; btn.textContent = "ENTER PASSTHROUGH"; btn.onclick = enter;
+})();
+addEventListener("resize", () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+</script>
+<script>if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});</script>
+</body>
+</html>
